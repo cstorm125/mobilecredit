@@ -1,0 +1,184 @@
+---
+title: "Processing the Test Dataset"
+author: "Charin Polpanumas"
+date: "March 11, 2559 BE"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    theme: spacelab
+---
+
+# Data Processing
+## Load Necessary Libraries
+```{r, cache=TRUE}
+library(jsonlite) #for reading json
+library(plyr) #for data frame operations
+library(caret) #for learning
+library(lubridate) #for dates
+library(AUC) #for AUC
+```
+
+## Download and Read Data
+```{r, cache=TRUE}
+#Download, put them in data frames and save to RDS
+# if (!file.exists('data/call.csv')){
+#     download.file(url='http://ec2-54-169-168-236.ap-southeast-1.compute.amazonaws.com/mlwc-tournament/2/testset/cdrtestframe.csv',destfile ='data/call.csv')
+#     call <-read.csv('data/call.json')
+#     saveRDS(call,file='data/call.rds')
+# }
+# if (!file.exists('data/payment.csv')){
+#     download.file(url='http://ec2-54-169-168-236.ap-southeast-1.compute.amazonaws.com/mlwc-tournament/2/testset/paymenttestframe.csv',destfile ='data/payment.csv')
+#     payment <-read.csv('data/payment.csv')
+#     saveRDS(payment,file='data/payment.rds')
+# }
+# if (!file.exists('data/profile.csv')){
+#     download.file(url='http://ec2-54-169-168-236.ap-southeast-1.compute.amazonaws.com/mlwc-tournament/2/testset/profiletestframe.csv',destfile ='data/profile.csv')
+#     profile <- read.csv('data/profile.csv')
+#     saveRDS(profile,file='data/profile.rds')
+# }
+
+    
+#Read from RDS
+call <- readRDS(file = 'data/call.rds')
+payment <- readRDS(file = 'data/payment.rds')
+profile <- readRDS(file = 'data/profile.rds')
+
+```
+
+## Feature Engineering
+### Call Details
+From the ```call``` dataset, we will engineer the following features for call variaty and mobility. Note that since the database is based on outgoing calls from our sample, we have little data on the calls our sample receives.
+
+```{r, cache=TRUE}
+
+#Sum of calls
+outgoing <- as.data.frame(table(call$callingnum))
+colnames(outgoing) <-c('callingnum','outgoing')
+#Remove one extra in outgoing
+outgoing<-outgoing[outgoing$callingnum %in% profile$phonenum,]
+
+#Mean duration
+m_duration <-aggregate(duration ~ callingnum, data = call, mean)
+colnames(m_duration) <-c('callingnum','m_duration')
+
+#Sum duration
+s_duration <-aggregate(duration ~ callingnum, data = call, sum)
+colnames(s_duration) <-c('callingnum','s_duration')
+
+#Sd duration
+sd_duration <-aggregate(duration ~ callingnum, data = call, sd)
+colnames(sd_duration) <-c('callingnum','sd_duration')
+
+#Sum of different called numbers
+dif_outgoing <- aggregate(callednum~callingnum, data = call, unique)
+colnames(dif_outgoing) <-c('callingnum','callednum')
+dif_outgoing$callednum <-sapply(dif_outgoing$callednum,length)
+
+#Percentage of weekend calls
+call$timestamp <-ymd_hms(call$timestamp)
+call$weekday <-weekdays(call$timestamp)
+call$weekend <-ifelse(call$weekday=='Sunday'|call$weekday=='Saturday',1,0)
+weekend <- aggregate(weekend~callingnum, data = call, sum)
+colnames(weekend) <-c('callingnum','weekend')
+weekend$weekend<-weekend$weekend/outgoing$outgoing
+
+#Percentages of calls in morning, afternoon, evening, night
+#Set the quarters
+call$hour <-hour(call$timestamp)
+call$morning <- ifelse(call$hour>=6 & call$hour<12,1,0)
+call$afternoon<- ifelse(call$hour>=12 & call$hour<18,1,0)
+call$evening<- ifelse(call$hour>= 18& call$hour<=23,1,0)
+call$night<- ifelse(call$hour>=0 & call$hour<6,1,0)
+
+#Aggregate the quarters
+#Morning
+morning <- aggregate(morning~callingnum, data = call, sum)
+colnames(morning) <-c('callingnum','morning')
+morning$morning<-morning$morning/outgoing$outgoing
+#Afternoon
+afternoon <- aggregate(afternoon~callingnum, data = call, sum)
+colnames(afternoon) <-c('callingnum','afternoon')
+afternoon$afternoon<-afternoon$afternoon/outgoing$outgoing
+#evening
+evening <- aggregate(evening~callingnum, data = call, sum)
+colnames(evening) <-c('callingnum','evening')
+evening$evening<-evening$evening/outgoing$outgoing
+#night
+night <- aggregate(night~callingnum, data = call, sum)
+colnames(night) <-c('callingnum','night')
+night$night<-night$night/outgoing$outgoing
+
+#Sum of different call locations
+dif_location <- aggregate(location~callingnum, data = call, unique)
+colnames(dif_location) <-c('callingnum','location')
+dif_location$location <-sapply(dif_location$location,length)
+```
+
+### Payment
+From the ```payment``` dataset, we will engineer the following features for payment pattern:
+```{r, cache=TRUE}
+#Percentage of INACTIVE
+payment$inactive <- ifelse(payment$status=='INACTIVE',1,0)
+payment$active <- ifelse(payment$status=='ACTIVE',1,0)
+s_active <-aggregate(active ~ callingnum, data = payment, sum)
+s_inactive<-aggregate(inactive ~ callingnum, data = payment, sum)
+s_per_inactive <-join(s_active,s_inactive)
+s_per_inactive$per_inactive<-s_per_inactive$inactive/(s_per_inactive$active+s_per_inactive$inactive)
+
+#Mean topup
+m_topup <- aggregate(topup ~ callingnum, data = payment, mean)
+colnames(m_topup) <-c('callingnum','m_topup')
+
+#Mean spending
+m_spend <-aggregate(spending ~ callingnum, data = payment, mean)
+colnames(m_spend) <-c('callingnum','m_spend')
+
+#Mean balance
+m_balance <-aggregate(balance ~ callingnum, data = payment, mean)
+colnames(m_balance) <-c('callingnum','m_balance')
+
+#Sum topup
+s_topup <- aggregate(topup ~ callingnum, data = payment, sum)
+colnames(s_topup) <-c('callingnum','s_topup')
+
+#Sum spending
+s_spend <-aggregate(spending ~ callingnum, data = payment, sum)
+colnames(s_spend) <-c('callingnum','s_spend')
+
+#sd topup
+sd_topup <- aggregate(topup ~ callingnum, data = payment, sd)
+colnames(sd_topup) <-c('callingnum','sd_topup')
+
+#sd spending
+sd_spend <-aggregate(spending ~ callingnum, data = payment, sd)
+colnames(sd_spend) <-c('callingnum','sd_spend')
+
+#sd balance
+sd_balance <-aggregate(balance ~ callingnum, data = payment, sd)
+colnames(sd_balance) <-c('callingnum','sd_balance')
+
+```
+
+### Profile
+```{r, cache=TRUE}
+#Age in days
+profile$age <-as.numeric(Sys.time()-ymd(profile$birthdate))
+profile<-subset(profile, select=-c(birthdate,paytype))
+```
+
+### Putting It Together
+```{r, cache=TRUE}
+df <- arrange(profile,phonenum)
+colnames(df)<-c('id','callingnum','gender','province','age')
+df<-join_all(list(df, outgoing,m_duration,s_duration,sd_duration,dif_outgoing,
+                  weekend,morning,afternoon,evening,night,dif_location,s_per_inactive,
+                  m_topup,m_spend,m_balance,s_topup,s_spend,sd_topup,sd_spend,sd_balance))
+
+#Factorize characters
+df$gender<-as.factor(df$gender)
+df$province<-as.factor(df$province)
+
+#save df
+saveRDS(df,file='test.rds')
+```

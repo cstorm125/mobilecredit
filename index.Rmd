@@ -1,0 +1,293 @@
+---
+title: "Mobile Phone Usage and Loan Repayment: ML Club Chula Tournament 2"
+author: "Charin Polpanumas"
+date: "March 11, 2559 BE"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    theme: spacelab
+---
+
+# Executive Summary
+
+This report is a predictive analytics attempted to predict credit behavior (default vs non-default) of 1,000 Thai individuals from the ```testing``` set given a dataset of 1,000 individuals to work with for ```training``` and ```validation``` set. It is an answer to the [ML Club Chula Tournament 2](https://drive.google.com/file/d/0B1vlbhoEpEY8Z2wxMW9jUUFDVkE/view) by [ML Club Chula](https://www.facebook.com/MLClubChula/). 
+
+With respect to [Bjorkegen and Grissen (2015)](http://papers.ssrn.com/sol3/papers.cfm?abstract_id=2611775), we extracted features from call pattern, mobile payment pattern and demographics of the sample. Feature data was collected throughout 2014 and the response data was collected in the latter half of 2014.
+
+We train random forest, svm with gaussian kernel and boosted logistic regression on the 60/40 training set, then validated resulting in random forest classifier having the largest AUC. We chose random forest to predict the testing set given.
+
+Report [here](http://cstorm125.github.io/mobilecredit)
+GitHub [here](https://github.com/cstorm125/mobilecredit)
+
+# Data Processing
+
+## Load Necessary Libraries
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+library(jsonlite) #for reading json
+library(plyr) #for data frame operations
+library(caret) #for learning
+library(lubridate) #for dates
+library(AUC) #for AUC
+library(DMwR) #for SMOTE
+set.seed(1412) #set seed for replication
+```
+
+## Download and Read Data
+The data to train our learner is provided by [ML Club Chula](https://www.facebook.com/MLClubChula/).
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+#Download, put them in data frames and save to RDS
+if (!file.exists('data/call.json')){
+    download.file(url='http://ec2-54-169-168-236.ap-southeast-1.compute.amazonaws.com/mlwc-tournament/trainingset/trainingset-api.php?tablename=cdrframe',destfile ='data/call.json')
+    call <-fromJSON(txt='data/call.json')
+    saveRDS(call,file='data/call.rds')
+}
+if (!file.exists('data/payment.json')){
+    download.file(url='http://ec2-54-169-168-236.ap-southeast-1.compute.amazonaws.com/mlwc-tournament/trainingset/trainingset-api.php?tablename=paymentframe',destfile ='data/payment.json')
+    payment <-fromJSON(txt='data/payment.json')
+    saveRDS(payment,file='data/payment.rds')
+}
+if (!file.exists('data/profile.json')){
+    download.file(url='http://ec2-54-169-168-236.ap-southeast-1.compute.amazonaws.com/mlwc-tournament/trainingset/trainingset-api.php?tablename=profileframe',destfile ='data/profile.json')
+    profile <-fromJSON(txt='data/profile.json')
+    saveRDS(profile,file='data/profile.rds')
+}
+if (!file.exists('data/response.json')){
+    download.file(url='http://ec2-54-169-168-236.ap-southeast-1.compute.amazonaws.com/mlwc-tournament/trainingset/trainingset-api.php?tablename=responseframe',destfile ='data/response.json')
+    response <-fromJSON(txt='data/response.json')
+    saveRDS(response,file='data/response.rds')
+}
+    
+#Read from RDS
+call <- readRDS(file = 'data/call.rds')
+payment <- readRDS(file = 'data/payment.rds')
+profile <- readRDS(file = 'data/profile.rds')
+response <- readRDS(file = 'data/response.rds')
+```
+
+## Feature Extraction
+
+### Call Details
+
+From the ```call``` dataset, we will engineer the following features for call variaty and mobility. Note that since the database is based on outgoing calls from our sample, we have little data on the calls our sample receives.
+
+Our resulting features include:
+* Sum of calls
+* Mean, sum and standard deviation of duration of calls
+* Sum of different numbers called
+* Percentage of weekend calls
+* Percentage of calls in the morning, afternoon, evening and at night
+* Sum of different locations calls were made
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+
+#Sum of calls
+outgoing <- as.data.frame(table(call$callingnum))
+colnames(outgoing) <-c('callingnum','outgoing')
+
+#Mean duration
+m_duration <-aggregate(duration ~ callingnum, data = call, mean)
+colnames(m_duration) <-c('callingnum','m_duration')
+
+#Sum duration
+s_duration <-aggregate(duration ~ callingnum, data = call, sum)
+colnames(s_duration) <-c('callingnum','s_duration')
+
+#Sd duration
+sd_duration <-aggregate(duration ~ callingnum, data = call, sd)
+colnames(sd_duration) <-c('callingnum','sd_duration')
+
+#Sum of different called numbers
+dif_outgoing <- aggregate(callednum~callingnum, data = call, unique)
+colnames(dif_outgoing) <-c('callingnum','callednum')
+dif_outgoing$callednum <-sapply(dif_outgoing$callednum,length)
+
+#Percentage of weekend calls
+call$timestamp <-ymd_hms(call$timestamp)
+call$weekday <-weekdays(call$timestamp)
+call$weekend <-ifelse(call$weekday=='Sunday'|call$weekday=='Saturday',1,0)
+weekend <- aggregate(weekend~callingnum, data = call, sum)
+colnames(weekend) <-c('callingnum','weekend')
+weekend$weekend<-weekend$weekend/outgoing$outgoing
+
+#Percentages of calls in morning, afternoon, evening, night
+#Set the quarters
+call$hour <-hour(call$timestamp)
+call$morning <- ifelse(call$hour>=6 & call$hour<12,1,0)
+call$afternoon<- ifelse(call$hour>=12 & call$hour<18,1,0)
+call$evening<- ifelse(call$hour>= 18& call$hour<=23,1,0)
+call$night<- ifelse(call$hour>=0 & call$hour<6,1,0)
+
+#Aggregate the quarters
+#Morning
+morning <- aggregate(morning~callingnum, data = call, sum)
+colnames(morning) <-c('callingnum','morning')
+morning$morning<-morning$morning/outgoing$outgoing
+#Afternoon
+afternoon <- aggregate(afternoon~callingnum, data = call, sum)
+colnames(afternoon) <-c('callingnum','afternoon')
+afternoon$afternoon<-afternoon$afternoon/outgoing$outgoing
+#evening
+evening <- aggregate(evening~callingnum, data = call, sum)
+colnames(evening) <-c('callingnum','evening')
+evening$evening<-evening$evening/outgoing$outgoing
+#night
+night <- aggregate(night~callingnum, data = call, sum)
+colnames(night) <-c('callingnum','night')
+night$night<-night$night/outgoing$outgoing
+
+#Sum of different call locations
+dif_location <- aggregate(location~callingnum, data = call, unique)
+colnames(dif_location) <-c('callingnum','location')
+dif_location$location <-sapply(dif_location$location,length)
+```
+
+### Payment
+
+From the ```payment``` dataset, we will engineer the following features for payment pattern:
+* Percentage of INACTIVE
+* Mean, sum and standard deviation of top-up
+* Mean, sum and standard deviation of spending
+* Mean and standard deviation of balance
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+#Percentage of INACTIVE
+payment$inactive <- ifelse(payment$status=='INACTIVE',1,0)
+payment$active <- ifelse(payment$status=='ACTIVE',1,0)
+s_active <-aggregate(active ~ callingnum, data = payment, sum)
+s_inactive<-aggregate(inactive ~ callingnum, data = payment, sum)
+s_per_inactive <-merge(s_active,s_inactive,by='callingnum')
+s_per_inactive$per_inactive<-s_per_inactive$inactive/(s_per_inactive$active+s_per_inactive$inactive)
+
+#Mean topup
+m_topup <- aggregate(topup ~ callingnum, data = payment, mean)
+colnames(m_topup) <-c('callingnum','m_topup')
+
+#Mean spending
+m_spend <-aggregate(spending ~ callingnum, data = payment, mean)
+colnames(m_spend) <-c('callingnum','m_spend')
+
+#Mean balance
+m_balance <-aggregate(balance ~ callingnum, data = payment, mean)
+colnames(m_balance) <-c('callingnum','m_balance')
+
+#Sum topup
+s_topup <- aggregate(topup ~ callingnum, data = payment, sum)
+colnames(s_topup) <-c('callingnum','s_topup')
+
+#Sum spending
+s_spend <-aggregate(spending ~ callingnum, data = payment, sum)
+colnames(s_spend) <-c('callingnum','s_spend')
+
+#sd topup
+sd_topup <- aggregate(topup ~ callingnum, data = payment, sd)
+colnames(sd_topup) <-c('callingnum','sd_topup')
+
+#sd spending
+sd_spend <-aggregate(spending ~ callingnum, data = payment, sd)
+colnames(sd_spend) <-c('callingnum','sd_spend')
+
+#sd balance
+sd_balance <-aggregate(balance ~ callingnum, data = payment, sd)
+colnames(sd_balance) <-c('callingnum','sd_balance')
+
+```
+
+### Profile
+
+From the ```profile``` dataset, we create the ```age``` feature.
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+#Age in days
+profile$age <-as.numeric(Sys.time()-ymd(profile$birthdate))
+
+#Remove unnecessary features
+profile<-subset(profile, select=-c(birthdate,paytype))
+```
+
+### Putting It Together
+
+We then combine all feature data frames and remove ```id``` and ```callingnum```, which are irrelevant to the analysis.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+df <- arrange(profile,phonenum)
+colnames(df)<-c('id','callingnum','gender','province','age')
+df<-join_all(list(df, outgoing,m_duration,s_duration,sd_duration,dif_outgoing,
+                  weekend,morning,afternoon,evening,night,dif_location,s_per_inactive,
+                  m_topup,m_spend,m_balance,s_topup,s_spend,sd_topup,sd_spend,sd_balance,response))
+
+#Factorize characters
+df$gender<-as.factor(df$gender)
+df$status<-as.factor(df$status)
+df$province<-as.factor(df$province)
+
+#Remove unnecessary features
+df <- subset(df, select=-c(id,callingnum))
+```
+
+# Model
+
+Separate data into ```training``` and ```validation``` sets at 60/40 ratio.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+inTrain <- createDataPartition(df$status,p=0.6,list=FALSE)
+training<-df[inTrain,]
+validation<-df[-inTrain,]
+```
+
+Create a SMOTEd training set to improve class imbalance. The new training set has a distribution of both class as follows.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+new_training=SMOTE(status~.,training,perc.over = 200,perc.under=200)
+table(new_training$status)
+```
+
+Train a ```random forest```, ```svm with gaussian kernel``` and ```boosted logistic regression``` classifier.
+
+```{r, cache=TRUE,warning=FALSE,message=FALSE}
+fit1<-train(status~.,data=new_training, method='rf')
+fit2<-train(status~.,data=new_training, method='svmRadial')
+fit3<-train(status~.,data=new_training, method='LogitBoost')
+```
+
+The variable importance of top-ten most influential variables for random forest, svm with gaussian kernel and boosted logistic regression are shown below.
+
+```{r,cache=TRUE}
+ggplot(varImp(fit1),top=10)
+ggplot(varImp(fit2),top=10)
+ggplot(varImp(fit3),top=10)
+```
+
+Area under the ROC curve for the ```validation``` set is as follows.
+
+```{r}
+#Predict
+pred1<-predict(fit1,newdata=validation)
+pred2<-predict(fit2,newdata=validation)
+pred3<-predict(fit3,newdata=validation)
+
+#AUC
+auc(roc(pred1,validation$status))
+auc(roc(pred2,validation$status))
+auc(roc(pred3,validation$status))
+```
+
+# Testing
+
+As a result of validation, ```random forest``` has the best AUC performance in ```validation``` set and thus we use it as our model for the ```testing``` set. Using the ```testing``` dataset provided by [ML Club Chula](https://www.facebook.com/MLClubChula/). The resulting dataset is a probability of label equals to 1 for a given profile ID.
+
+```{r}
+#load
+testing<-readRDS(file = 'testing/test.rds')
+#Predict
+pred<-predict(fit1,newdata=testing,type='prob')
+
+#Create submission file
+pd<-pred$`1`
+profile_id<-as.character(testing$id)
+result<-cbind(profile_id,pd)
+result
+
+#Write to submission2.csv
+write.csv(result,'submission2.csv')
+```
