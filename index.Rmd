@@ -18,13 +18,14 @@ With respect to [Bjorkegen and Grissen (2015)](http://papers.ssrn.com/sol3/paper
 We train random forest, svm with gaussian kernel and boosted logistic regression on the 60/40 training set, then validated resulting in random forest classifier having the largest AUC. We chose random forest to predict the testing set given.
 
 Report [here](http://cstorm125.github.io/mobilecredit)
+
 GitHub [here](https://github.com/cstorm125/mobilecredit)
 
 # Data Processing
 
 ## Load Necessary Libraries
 
-```{r, cache=TRUE,warning=FALSE,message=FALSE}
+```{r,warning=FALSE,message=FALSE}
 library(jsonlite) #for reading json
 library(plyr) #for data frame operations
 library(caret) #for learning
@@ -73,11 +74,17 @@ response <- readRDS(file = 'data/response.rds')
 From the ```call``` dataset, we will engineer the following features for call variaty and mobility. Note that since the database is based on outgoing calls from our sample, we have little data on the calls our sample receives.
 
 Our resulting features include:
+
 * Sum of calls
+
 * Mean, sum and standard deviation of duration of calls
+
 * Sum of different numbers called
+
 * Percentage of weekend calls
+
 * Percentage of calls in the morning, afternoon, evening and at night
+
 * Sum of different locations calls were made
 
 ```{r, cache=TRUE,warning=FALSE,message=FALSE}
@@ -146,9 +153,13 @@ dif_location$location <-sapply(dif_location$location,length)
 ### Payment
 
 From the ```payment``` dataset, we will engineer the following features for payment pattern:
+
 * Percentage of INACTIVE
+
 * Mean, sum and standard deviation of top-up
+
 * Mean, sum and standard deviation of spending
+
 * Mean and standard deviation of balance
 
 ```{r, cache=TRUE,warning=FALSE,message=FALSE}
